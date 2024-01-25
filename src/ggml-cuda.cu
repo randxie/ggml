@@ -868,7 +868,11 @@ static __global__ void concat_f32(const float * x,const float * y, float * dst, 
     }
 }
 
-static __global__ void upscale_f32(const float * x, float * dst, const int ne00, const int nb02, const int scale_factor) {
+static __global__ void upscale_f32(const float * x, float * dst, const int ne00, const int ne00xne01, const int scale_factor) {
+    // blockIdx.z: idx of ne02*ne03
+    // blockIdx.y: idx of ne01*scale_factor， aka ne1
+    // blockIDx.x: idx of ne00*scale_factor / BLOCK_SIZE
+    // ne00xne01: ne00 * ne01
     int ne0 = ne00 * scale_factor;
     int nidx = threadIdx.x + blockIdx.x * blockDim.x;
     if (nidx >= ne0) {
@@ -880,7 +884,7 @@ static __global__ void upscale_f32(const float * x, float * dst, const int ne00,
     int offset_src =
         i00 +
         i01 * ne00 +
-        blockIdx.z * nb02;
+        blockIdx.z * ne00xne01;
     int offset_dst =
         nidx +
         blockIdx.y * ne0 +
@@ -888,7 +892,10 @@ static __global__ void upscale_f32(const float * x, float * dst, const int ne00,
     dst[offset_dst] = x[offset_src];
 }
 
-static __global__ void pad_f32(const float * x, float * dst, const int ne0, const int ne00, const int ne01, const int ne02) {
+static __global__ void pad_f32(const float * x, float * dst, const int ne0, const int ne00, const int ne01, const int ne02, const int ne03) {
+    // blockIdx.z: idx of ne2*ne3, aka ne02*ne03
+    // blockIdx.y: idx of ne1
+    // blockIDx.x: idx of ne0 / BLOCK_SIZE
     int nidx = threadIdx.x + blockIdx.x * blockDim.x;
     if (nidx >= ne0) {
         return;
@@ -899,7 +906,7 @@ static __global__ void pad_f32(const float * x, float * dst, const int ne0, cons
         nidx +
         blockIdx.y * ne0 +
         blockIdx.z * ne0 * gridDim.y;
-    if (nidx < ne00 && blockIdx.y < ne01 && blockIdx.z < ne02) {
+    if (nidx < ne00 && blockIdx.y < ne01 && blockIdx.z < ne02*ne03) {
         int offset_src =
             nidx +
             blockIdx.y * ne00 +
@@ -5285,8 +5292,8 @@ static __device__ void cpy_1_f16_f16(const char * cxi, char * cdsti) {
 
 template <cpy_kernel_t cpy_1>
 static __global__ void cpy_f32_f16(const char * cx, char * cdst, const int ne,
-                                   const int ne00, const int ne01, const int nb00, const int nb01, const int nb02,
-                                   const int ne10, const int ne11, const int nb10, const int nb11, const int nb12) {
+                                   const int ne00, const int ne01, const int ne02, const int nb00, const int nb01, const int nb02, const int nb03,
+                                   const int ne10, const int ne11, const int ne12, const int nb10, const int nb11, const int nb12, const int nb13) {
     const int i = blockDim.x*blockIdx.x + threadIdx.x;
 
     if (i >= ne) {
@@ -5295,15 +5302,17 @@ static __global__ void cpy_f32_f16(const char * cx, char * cdst, const int ne,
 
     // determine indices i02/i12, i01/i11, i00/i10 as a function of index i of flattened tensor
     // then combine those indices with the corresponding byte offsets to get the total offsets
-    const int i02 = i / (ne00*ne01);
-    const int i01 = (i - i02*ne01*ne00) / ne00;
-    const int i00 = i - i02*ne01*ne00 - i01*ne00;
-    const int x_offset = i00*nb00 + i01*nb01 + i02*nb02;
+    const int i03 = i / (ne00*ne01*ne02);
+    const int i02 = (i - i03*ne00*ne01*ne02) / (ne00*ne01);
+    const int i01 = (i - i03*ne00*ne01*ne02 - i02*ne00*ne01) / ne00;
+    const int i00 = i - i03*ne00*ne01*ne02- i02*ne00*ne01 - i01*ne00;
+    const int x_offset = i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03;
 
-    const int i12 = i / (ne10*ne11);
-    const int i11 = (i - i12*ne10*ne11) / ne10;
-    const int i10 = i - i12*ne10*ne11 - i11*ne10;
-    const int dst_offset = i10*nb10 + i11*nb11 + i12*nb12;
+    const int i13 = i / (ne10*ne11*ne12);
+    const int i12 = (i - i13*ne10*ne11*ne12) / (ne10*ne11);
+    const int i11 = (i - i13*ne10*ne11*ne12 - i12*ne10*ne11) / ne10;
+    const int i10 = i - i13*ne10*ne11*ne12 - i12*ne10*ne11 - i11*ne10;
+    const int dst_offset = i10*nb10 + i11*nb11 + i12*nb12 + i13*nb13;
 
     cpy_1(cx + x_offset, cdst + dst_offset);
 }
@@ -5397,23 +5406,25 @@ static __device__ void cpy_blck_f32_q4_1(const char * cxi, char * cdsti) {
 
 template <cpy_kernel_t cpy_blck, int qk>
 static __global__ void cpy_f32_q(const char * cx, char * cdst, const int ne,
-                                 const int ne00, const int ne01, const int nb00, const int nb01, const int nb02,
-                                 const int ne10, const int ne11, const int nb10, const int nb11, const int nb12) {
+                                 const int ne00, const int ne01, const int ne02, const int nb00, const int nb01, const int nb02, const int nb03,
+                                 const int ne10, const int ne11, const int ne12, const int nb10, const int nb11, const int nb12, const int nb13) {
     const int i = (blockDim.x*blockIdx.x + threadIdx.x)*qk;
 
     if (i >= ne) {
         return;
     }
 
-    const int i02 = i / (ne00*ne01);
-    const int i01 = (i - i02*ne01*ne00) / ne00;
-    const int i00 = (i - i02*ne01*ne00 - i01*ne00);
-    const int x_offset = i00*nb00 + i01*nb01 + i02*nb02;
+    const int i03 = i / (ne00*ne01*ne02);
+    const int i02 = (i - i03*ne00*ne01*ne02) / (ne00*ne01);
+    const int i01 = (i - i03*ne00*ne01*ne02 - i02*ne00*ne01) / ne00;
+    const int i00 = i - i03*ne00*ne01*ne02- i02*ne00*ne01 - i01*ne00;
+    const int x_offset = i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03;
 
-    const int i12 = i / (ne10*ne11);
-    const int i11 = (i - i12*ne10*ne11) / ne10;
-    const int i10 = (i - i12*ne10*ne11 - i11*ne10)/qk;
-    const int dst_offset = i10*nb10 + i11*nb11 + i12*nb12;
+    const int i13 = i / (ne10*ne11*ne12);
+    const int i12 = (i - i13*ne10*ne11*ne12) / (ne10*ne11);
+    const int i11 = (i - i13*ne10*ne11*ne12 - i12*ne10*ne11) / ne10;
+    const int i10 = (i - i13*ne10*ne11*ne12 - i12*ne10*ne11 - i11*ne10)/qk;
+    const int dst_offset = i10*nb10 + i11*nb11 + i12*nb12 + i13*nb13;
 
     cpy_blck(cx + x_offset, cdst + dst_offset);
 }
@@ -5906,9 +5917,9 @@ static __global__ void clamp_f32(const float * x, float * dst, const float min, 
 
 static  __global__ void im2col_f32_f16(
         const float * x, half * dst,
-        int offset_delta, int N, int IW, int IH, int OW, int OH, int KW, int KH, int pelements, int CHW,
+        int offset_delta, int64_t N, int64_t IW, int64_t IH, int64_t OW, int64_t OH, int64_t KW, int64_t KH, int64_t pelements, int64_t CHW,
         int s0, int s1, int p0, int p1, int d0, int d1) {
-    const int i = threadIdx.x + blockIdx.x * blockDim.x;
+    const int64_t i = threadIdx.x + blockIdx.x * blockDim.x;
     if (i >= pelements) {
         return;
     }
@@ -5916,13 +5927,13 @@ static  __global__ void im2col_f32_f16(
     // blockIdx.y: ioh
     // blockIdx.z: iic
     // CHW: IC * KH * KW
-    const int ioh = blockIdx.y;
-    const int iic = blockIdx.z;
+    const int64_t ioh = blockIdx.y;
+    const int64_t iic = blockIdx.z;
 
-    const int ikh = i / (KW * OW * N);
-    const int ikw = (i - ikh*(KW * OW * N)) / (OW*N);
-    const int iow = (i - ikh*(KW * OW * N) - ikw*(OW*N)) / N;
-    const int in = i % N;
+    const int64_t ikh = i / (KW * OW * N);
+    const int64_t ikw = (i - ikh*(KW * OW * N)) / (OW*N);
+    const int64_t iow = (i - ikh*(KW * OW * N) - ikw*(OW*N)) / N;
+    const int64_t in = i % N;
 
     const int64_t iiw = iow * s0 + ikw * d0 - p0;
     const int64_t iih = ioh * s1 + ikh * d1 - p1;
@@ -5934,7 +5945,7 @@ static  __global__ void im2col_f32_f16(
     if (iih < 0 || iih >= IH || iiw < 0 || iiw >= IW) {
         dst[offset_dst] = __float2half(0.0f);
     } else {
-        const int64_t offset_src = in*CHW + iic * IH * IW + iih * IW + iiw; // iic * IH * IW
+        const int64_t offset_src = in*CHW + iic * IH * IW + iih * IW + iiw;
         dst[offset_dst] = __float2half(x[offset_src]);
     }
 }
@@ -6190,19 +6201,20 @@ static void concat_f32_cuda(const float * x, const float * y, float * dst, const
     concat_f32<<<gridDim, CUDA_CONCAT_BLOCK_SIZE, 0, stream>>>(x, y, dst, ne0, ne02);
 }
 
-static void upscale_f32_cuda(const float * x, float * dst, const int ne00, const int ne01, const int ne02, const int scale_factor, cudaStream_t stream) {
+static void upscale_f32_cuda(const float * x, float * dst, const int ne00, const int ne01, const int ne02, const int ne03,
+                             const int scale_factor, cudaStream_t stream) {
     int ne0 = (ne00 * scale_factor);
     int num_blocks = (ne0 + CUDA_UPSCALE_BLOCK_SIZE - 1) / CUDA_UPSCALE_BLOCK_SIZE;
-    dim3 gridDim(num_blocks, (ne01 * scale_factor), ne02);
+    dim3 gridDim(num_blocks, (ne01 * scale_factor), ne02*ne03);
     upscale_f32<<<gridDim, CUDA_UPSCALE_BLOCK_SIZE, 0, stream>>>(x, dst, ne00, ne00 * ne01, scale_factor);
 }
 
 static void pad_f32_cuda(const float * x, float * dst,
-    const int ne00, const int ne01, const int ne02,
-    const int ne0, const int ne1, const int ne2, cudaStream_t stream) {
+    const int ne00, const int ne01, const int ne02, const int ne03,
+    const int ne0, const int ne1, const int ne2, const int ne3, cudaStream_t stream) {
     int num_blocks = (ne0 + CUDA_PAD_BLOCK_SIZE - 1) / CUDA_PAD_BLOCK_SIZE;
-    dim3 gridDim(num_blocks, ne1, ne2);
-    pad_f32<<<gridDim, CUDA_PAD_BLOCK_SIZE, 0, stream>>>(x, dst, ne0, ne00, ne01, ne02);
+    dim3 gridDim(num_blocks, ne1, ne2*ne3);
+    pad_f32<<<gridDim, CUDA_PAD_BLOCK_SIZE, 0, stream>>>(x, dst, ne0, ne00, ne01, ne02, ne03);
 }
 
 static void rms_norm_f32_cuda(const float * x, float * dst, const int ncols, const int nrows, const float eps, cudaStream_t stream) {
@@ -7054,65 +7066,65 @@ static void ggml_mul_mat_vec_nc_f16_f32_cuda(
 
 static void ggml_cpy_f32_f32_cuda(
     const char * cx, char * cdst, const int ne,
-    const int ne00, const int ne01, const int nb00, const int nb01, const int nb02,
-    const int ne10, const int ne11, const int nb10, const int nb11, const int nb12, cudaStream_t stream) {
+    const int ne00, const int ne01, const int ne02, const int nb00, const int nb01, const int nb02, const int nb03,
+    const int ne10, const int ne11, const int ne12, const int nb10, const int nb11, const int nb12, const int nb13, cudaStream_t stream) {
 
     const int num_blocks = (ne + CUDA_CPY_BLOCK_SIZE - 1) / CUDA_CPY_BLOCK_SIZE;
     cpy_f32_f16<cpy_1_f32_f32><<<num_blocks, CUDA_CPY_BLOCK_SIZE, 0, stream>>>
-        (cx, cdst, ne, ne00, ne01, nb00, nb01, nb02, ne10, ne11, nb10, nb11, nb12);
+        (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
 }
 
 static void ggml_cpy_f32_f16_cuda(
     const char * cx, char * cdst, const int ne,
-    const int ne00, const int ne01, const int nb00, const int nb01, const int nb02,
-    const int ne10, const int ne11, const int nb10, const int nb11, const int nb12, cudaStream_t stream) {
+    const int ne00, const int ne01, const int ne02, const int nb00, const int nb01, const int nb02, const int nb03,
+    const int ne10, const int ne11, const int ne12, const int nb10, const int nb11, const int nb12, const int nb13, cudaStream_t stream) {
 
     const int num_blocks = (ne + CUDA_CPY_BLOCK_SIZE - 1) / CUDA_CPY_BLOCK_SIZE;
     cpy_f32_f16<cpy_1_f32_f16><<<num_blocks, CUDA_CPY_BLOCK_SIZE, 0, stream>>>
-        (cx, cdst, ne, ne00, ne01, nb00, nb01, nb02, ne10, ne11, nb10, nb11, nb12);
+        (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
 }
 
 static void ggml_cpy_f32_q8_0_cuda(
     const char * cx, char * cdst, const int ne,
-    const int ne00, const int ne01, const int nb00, const int nb01, const int nb02,
-    const int ne10, const int ne11, const int nb10, const int nb11, const int nb12, cudaStream_t stream) {
+    const int ne00, const int ne01, const int ne02, const int nb00, const int nb01, const int nb02, const int nb03,
+    const int ne10, const int ne11, const int ne12, const int nb10, const int nb11, const int nb12, const int nb13, cudaStream_t stream) {
 
     GGML_ASSERT(ne % QK8_0 == 0);
     const int num_blocks = ne / QK8_0;
     cpy_f32_q<cpy_blck_f32_q8_0, QK8_0><<<num_blocks, 1, 0, stream>>>
-        (cx, cdst, ne, ne00, ne01, nb00, nb01, nb02, ne10, ne11, nb10, nb11, nb12);
+        (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
 }
 
 static void ggml_cpy_f32_q4_0_cuda(
     const char * cx, char * cdst, const int ne,
-    const int ne00, const int ne01, const int nb00, const int nb01, const int nb02,
-    const int ne10, const int ne11, const int nb10, const int nb11, const int nb12, cudaStream_t stream) {
+    const int ne00, const int ne01, const int ne02, const int nb00, const int nb01, const int nb02, const int nb03,
+    const int ne10, const int ne11, const int ne12, const int nb10, const int nb11, const int nb12, const int nb13, cudaStream_t stream) {
 
     GGML_ASSERT(ne % QK4_0 == 0);
     const int num_blocks = ne / QK4_0;
     cpy_f32_q<cpy_blck_f32_q4_0, QK4_0><<<num_blocks, 1, 0, stream>>>
-        (cx, cdst, ne, ne00, ne01, nb00, nb01, nb02, ne10, ne11, nb10, nb11, nb12);
+        (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
 }
 
 static void ggml_cpy_f32_q4_1_cuda(
     const char * cx, char * cdst, const int ne,
-    const int ne00, const int ne01, const int nb00, const int nb01, const int nb02,
-    const int ne10, const int ne11, const int nb10, const int nb11, const int nb12, cudaStream_t stream) {
+    const int ne00, const int ne01, const int ne02, const int nb00, const int nb01, const int nb02, const int nb03,
+    const int ne10, const int ne11, const int ne12, const int nb10, const int nb11, const int nb12, const int nb13, cudaStream_t stream) {
 
     GGML_ASSERT(ne % QK4_1 == 0);
     const int num_blocks = ne / QK4_1;
     cpy_f32_q<cpy_blck_f32_q4_1, QK4_1><<<num_blocks, 1, 0, stream>>>
-        (cx, cdst, ne, ne00, ne01, nb00, nb01, nb02, ne10, ne11, nb10, nb11, nb12);
+        (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
 }
 
 static void ggml_cpy_f16_f16_cuda(
     const char * cx, char * cdst, const int ne,
-    const int ne00, const int ne01, const int nb00, const int nb01, const int nb02,
-    const int ne10, const int ne11, const int nb10, const int nb11, const int nb12, cudaStream_t stream) {
+    const int ne00, const int ne01, const int ne02, const int nb00, const int nb01, const int nb02, const int nb03,
+    const int ne10, const int ne11, const int ne12, const int nb10, const int nb11, const int nb12, const int nb13, cudaStream_t stream) {
 
     const int num_blocks = (ne + CUDA_CPY_BLOCK_SIZE - 1) / CUDA_CPY_BLOCK_SIZE;
     cpy_f32_f16<cpy_1_f16_f16><<<num_blocks, CUDA_CPY_BLOCK_SIZE, 0, stream>>>
-        (cx, cdst, ne, ne00, ne01, nb00, nb01, nb02, ne10, ne11, nb10, nb11, nb12);
+        (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
 }
 
 static void scale_f32_cuda(const float * x, float * dst, const float scale, const int k, cudaStream_t stream) {
@@ -7305,12 +7317,12 @@ static void soft_max_f32_cuda(const float * x, const float * y, float * dst, con
     }
 }
 
-static void im2col_f32_f16_cuda(const float* x, half* dst, int N,
-    int IW, int IH, int OW, int OH, int KW, int KH, int IC,
+static void im2col_f32_f16_cuda(const float* x, half* dst, int64_t N,
+    int64_t IW, int64_t IH, int64_t OW, int64_t OH, int64_t KW, int64_t KH, int64_t IC,
     int offset_delta,
     int s0,int s1,int p0,int p1,int d0,int d1, cudaStream_t stream) {
-    const int parallel_elements = N * OW * KW * KH;
-    const int num_blocks = (parallel_elements + CUDA_IM2COL_BLOCK_SIZE - 1) / CUDA_IM2COL_BLOCK_SIZE;
+    const int64_t parallel_elements = N * OW * KW * KH;
+    const int64_t num_blocks = (parallel_elements + CUDA_IM2COL_BLOCK_SIZE - 1) / CUDA_IM2COL_BLOCK_SIZE;
     dim3 block_nums(num_blocks, OH, IC);
     im2col_f32_f16<<<block_nums, CUDA_IM2COL_BLOCK_SIZE, 0, stream>>>(x, dst, offset_delta, N, IW, IH, OW, OH, KW, KH, parallel_elements, (IC * KH * KW), s0, s1, p0, p1, d0, d1);
 }
@@ -7986,11 +7998,10 @@ static void ggml_cuda_op_upscale(
 
     GGML_ASSERT(src0->type == GGML_TYPE_F32);
     GGML_ASSERT(dst->type == GGML_TYPE_F32);
-    GGML_ASSERT(src0->ne[3] == 1 && dst->ne[3] == 1); // just 3D tensors
 
     const int scale_factor = dst->op_params[0];
 
-    upscale_f32_cuda(src0_dd, dst_dd, src0->ne[0], src0->ne[1], src0->ne[2], scale_factor, main_stream);
+    upscale_f32_cuda(src0_dd, dst_dd, src0->ne[0], src0->ne[1], src0->ne[2], src0->ne[3], scale_factor, main_stream);
 
     (void) src1;
     (void) dst;
@@ -8003,11 +8014,10 @@ static void ggml_cuda_op_pad(
 
     GGML_ASSERT(src0->type == GGML_TYPE_F32);
     GGML_ASSERT(dst->type == GGML_TYPE_F32);
-    GGML_ASSERT(src0->ne[3] == 1 && dst->ne[3] == 1); // just 3D tensors
 
     pad_f32_cuda(src0_dd, dst_dd,
-        src0->ne[0], src0->ne[1], src0->ne[2],
-        dst->ne[0], dst->ne[1], dst->ne[2], main_stream);
+        src0->ne[0], src0->ne[1], src0->ne[2], src0->ne[3],
+        dst->ne[0], dst->ne[1], dst->ne[2], dst->ne[3], main_stream);
 
     (void) src1;
     (void) dst;
@@ -8539,7 +8549,6 @@ static void ggml_cuda_op_im2col(
     const int32_t d1 = ((const int32_t*)(dst->op_params))[5];
 
     const bool is_2D = ((const int32_t*)(dst->op_params))[6] == 1;
-    printf("%d is_2D", is_2D);
 
     const int64_t N  = src1->ne[is_2D ? 3 : 2];
     const int64_t IC = src1->ne[is_2D ? 2 : 1];
@@ -9860,19 +9869,21 @@ static void ggml_cuda_cpy(const ggml_tensor * src0, const ggml_tensor * src1, gg
 
     const int64_t ne00 = src0->ne[0];
     const int64_t ne01 = src0->ne[1];
-    GGML_ASSERT(src0->ne[3] == 1);
+    const int64_t ne02 = src0->ne[2];
 
     const int64_t nb00 = src0->nb[0];
     const int64_t nb01 = src0->nb[1];
     const int64_t nb02 = src0->nb[2];
+    const int64_t nb03 = src0->nb[3];
 
     const int64_t ne10 = src1->ne[0];
     const int64_t ne11 = src1->ne[1];
-    GGML_ASSERT(src1->ne[3] == 1);
+    const int64_t ne12 = src1->ne[2];
 
     const int64_t nb10 = src1->nb[0];
     const int64_t nb11 = src1->nb[1];
     const int64_t nb12 = src1->nb[2];
+    const int64_t nb13 = src1->nb[3];
 
     ggml_cuda_set_device(g_main_device);
     cudaStream_t main_stream = g_cudaStreams[g_main_device][0];
@@ -9884,17 +9895,17 @@ static void ggml_cuda_cpy(const ggml_tensor * src0, const ggml_tensor * src1, gg
     char * src1_ddc = (char *) src1_extra->data_device[g_main_device];
 
     if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32) {
-        ggml_cpy_f32_f32_cuda (src0_ddc, src1_ddc, ne, ne00, ne01, nb00, nb01, nb02, ne10, ne11, nb10, nb11, nb12, main_stream);
+        ggml_cpy_f32_f32_cuda (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F16) {
-        ggml_cpy_f32_f16_cuda (src0_ddc, src1_ddc, ne, ne00, ne01, nb00, nb01, nb02, ne10, ne11, nb10, nb11, nb12, main_stream);
+        ggml_cpy_f32_f16_cuda (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q8_0) {
-        ggml_cpy_f32_q8_0_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, nb00, nb01, nb02, ne10, ne11, nb10, nb11, nb12, main_stream);
+        ggml_cpy_f32_q8_0_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q4_0) {
-        ggml_cpy_f32_q4_0_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, nb00, nb01, nb02, ne10, ne11, nb10, nb11, nb12, main_stream);
+        ggml_cpy_f32_q4_0_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_Q4_1) {
-        ggml_cpy_f32_q4_1_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, nb00, nb01, nb02, ne10, ne11, nb10, nb11, nb12, main_stream);
+        ggml_cpy_f32_q4_1_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16) {
-        ggml_cpy_f16_f16_cuda (src0_ddc, src1_ddc, ne, ne00, ne01, nb00, nb01, nb02, ne10, ne11, nb10, nb11, nb12, main_stream);
+        ggml_cpy_f16_f16_cuda (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else {
         fprintf(stderr, "%s: unsupported type combination (%s to %s)\n", __func__,
                 ggml_type_name(src0->type), ggml_type_name(src1->type));
