@@ -6,6 +6,10 @@
 #include "ggml-cuda.h"
 #endif
 
+#ifdef GGML_USE_METAL
+#include "ggml-metal.h"
+#endif
+
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,11 +67,11 @@ int main(int argc, const char** argv) {
         params.no_alloc = false;
         // memory allocation happens here
         struct ggml_context* ctx = ggml_init(params);
-        
+
         struct ggml_tensor* timesteps = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, ts.size());
         memcpy(timesteps->data, ts.data(), ggml_nbytes(timesteps));
         struct ggml_tensor* embedding = new_timestep_embedding(ctx, timesteps, dim, max_period);
-        
+
         float* vec1 = ggml_get_data_f32(embedding);
         for (int i = 0; i < ggml_nelements(embedding); i++) {
             printf("%.4f ", *(vec1 + i));

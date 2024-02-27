@@ -704,6 +704,35 @@ kernel void kernel_rms_norm(
     }
 }
 
+kernel void kernel_timestep_embedding_f32(
+        device const float * timesteps,
+        device       float * dst,
+        constant   int64_t & nb1,
+        constant   int64_t & dim,
+        constant   int64_t & max_period,
+        uint   i[[threadgroup_position_in_grid]],
+        uint   j[[thread_position_in_threadgroup]],
+        uint   threadgroup_size[[threads_per_threadgroup]]) {
+
+    j += i * threadgroup_size;
+    device float *embed_data = dst + i * nb1;
+
+    if (dim %2 != 0 && j == ((dim+1) / 2)) {
+        embed_data[dim] = 0.f;
+    }
+
+    int half_dim = dim / 2;
+    if (j >= half_dim) {
+        return;
+    }
+
+    float timestamp = timesteps[i];
+    float freq = exp(-log(float(max_period)) * j / half_dim);
+    float arg = timestamp * freq;
+    embed_data[j] = cos(arg);
+    embed_data[j + half_dim] = sin(arg);
+}
+
 kernel void kernel_group_norm(
         device const float * src0,
         device       float * dst,
