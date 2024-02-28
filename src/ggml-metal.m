@@ -2235,21 +2235,18 @@ static bool ggml_metal_graph_compute(
 
                         id<MTLComputePipelineState> pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_TIMESTEP_EMBEDDING_F32].pipeline;
 
-                        const size_t nb1 = ((int64_t *) dst->op_params)[0];
-                        const size_t dim = ((int64_t *) dst->op_params)[1];
-                        const size_t max_period = ((int64_t *) dst->op_params)[2];
+                        const int64_t ne = ggml_nelements(src0);
+                        const int64_t dim = dst->op_params[0];
+                        const int64_t max_period = dst->op_params[1];
 
                         [encoder setComputePipelineState:pipeline];
                         [encoder setBuffer:id_src0      offset:offs_src0        atIndex:0];
                         [encoder setBuffer:id_dst       offset:offs_dst         atIndex:1];
-                        [encoder setBytes:&nb01         length:sizeof( int64_t) atIndex:2];
+                        [encoder setBytes:&ne           length:sizeof( int64_t) atIndex:2];
                         [encoder setBytes:&dim          length:sizeof( int64_t) atIndex:3];
-                        [encoder setBytes:&max_period    length:sizeof( int64_t) atIndex:4];
+                        [encoder setBytes:&max_period   length:sizeof( int64_t) atIndex:4];
 
-                        const int nth = MIN(1024, dim / 2);
-                        const int nBlocks = (dim + 1) / 2 / nth;
-
-                        [encoder dispatchThreadgroups:MTLSizeMake(nBlocks, ne1, 1) threadsPerThreadgroup:MTLSizeMake(nth, 1, 1)];
+                        [encoder dispatchThreadgroups:MTLSizeMake(ne, dim, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
                     } break;
                 case GGML_OP_ARGSORT:
                     {

@@ -1,6 +1,6 @@
-#include "ggml/ggml.h"
 #include "ggml/ggml-alloc.h"
 #include "ggml/ggml-backend.h"
+#include "ggml/ggml.h"
 
 #ifdef GGML_USE_CUBLAS
 #include "ggml-cuda.h"
@@ -10,11 +10,11 @@
 #include "ggml-metal.h"
 #endif
 
-#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <vector>
+#include <string.h>
 #include <cmath>
+#include <vector>
 
 void ggml_tensor_set_f32(struct ggml_tensor* tensor, float value, int l, int k = 0, int j = 0, int i = 0) {
     GGML_ASSERT(tensor->nb[0] == sizeof(float));
@@ -58,13 +58,13 @@ struct ggml_tensor* new_timestep_embedding(struct ggml_context* ctx,
 
 int main(int argc, const char** argv) {
     std::vector<float> ts = {12, 24};
-    int dim = 15;
-    int max_period = 10000;
+    int dim               = 15;
+    int max_period        = 10000;
     {
         struct ggml_init_params params;
-        params.mem_size = 16 * 1024 * 1024;
+        params.mem_size   = 16 * 1024 * 1024;
         params.mem_buffer = NULL;
-        params.no_alloc = false;
+        params.no_alloc   = false;
         // memory allocation happens here
         struct ggml_context* ctx = ggml_init(params);
 
@@ -80,11 +80,11 @@ int main(int argc, const char** argv) {
     }
     printf("-----------------------------------\n");
     {
-        bool use_gpu = true;
-        ggml_backend_t backend = NULL;
+        bool use_gpu                        = true;
+        ggml_backend_t backend              = NULL;
         ggml_backend_buffer_t params_buffer = NULL;
 
-        #ifdef GGML_USE_CUBLAS
+#ifdef GGML_USE_CUBLAS
         if (use_gpu) {
             fprintf(stderr, "%s: using CUDA backend\n", __func__);
             backend = ggml_backend_cuda_init(0);
@@ -92,41 +92,47 @@ int main(int argc, const char** argv) {
                 fprintf(stderr, "%s: ggml_backend_cuda_init() failed\n", __func__);
             }
         }
-        #endif
+#endif
 
-        int num_tensors = 2;
-        int buffer_size = 1024;
+#ifdef GGML_USE_METAL
+        fprintf(stderr, "%s: using Metal backend\n", __func__);
+        backend = ggml_backend_metal_init();
+        if (!backend) {
+            fprintf(stderr, "%s: ggml_backend_metal_init() failed\n", __func__);
+        }
+#endif
+
+        int num_tensors                = 2;
+        int buffer_size                = 1024;
         struct ggml_init_params params = {
-                /*.mem_size   =*/ggml_tensor_overhead() * num_tensors + 2 * 1024 * 1024,
-                /*.mem_size   =*/ NULL,
-                /*.mem_size   =*/ true,
+            /*.mem_size   =*/ggml_tensor_overhead() * num_tensors + 2 * 1024 * 1024,
+            /*.mem_size   =*/NULL,
+            /*.mem_size   =*/true,
         };
 
-        if(!backend) {
+        if (!backend) {
             // fallback to CPU backend
             backend = ggml_backend_cpu_init();
         }
 
         struct ggml_context* ctx = ggml_init(params);
 
-
         struct ggml_tensor* timesteps = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, ts.size());
 
         params_buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
 
         // load data to buffer
-        if(ggml_backend_is_cpu(backend)) {
+        if (ggml_backend_is_cpu(backend)) {
             memcpy(timesteps->data, ts.data(), ggml_nbytes(timesteps));
         } else {
             ggml_backend_tensor_set(timesteps, ts.data(), 0, ggml_nbytes(timesteps));
         }
 
-
-        struct ggml_tensor * t = ggml_timestep_embedding(ctx, timesteps, dim, max_period);
+        struct ggml_tensor* t = ggml_timestep_embedding(ctx, timesteps, dim, max_period);
 
         ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
 
-        struct ggml_cgraph * graph = ggml_new_graph(ctx);
+        struct ggml_cgraph* graph = ggml_new_graph(ctx);
         ggml_build_forward_expand(graph, t);
 
         ggml_gallocr_alloc_graph(galloc, graph);
