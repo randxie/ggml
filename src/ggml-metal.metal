@@ -714,7 +714,11 @@ kernel void kernel_timestep_embedding_f32(
 
     int i = grid.x;
     int j = grid.y;
-    int offset = i * dim;
+    int step = dim;
+    if (dim % 2 != 0) {
+        step = dim + 1;
+    }
+    int offset = i * step;
     if (dim %2 != 0 && j == 0) {
         dst[offset + dim - 1] = 0.f;
     }
